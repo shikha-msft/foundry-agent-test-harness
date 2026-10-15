@@ -1,0 +1,12 @@
+{"agent": "randomfact", "query": "Tell me a random fact about octopuses."}
+{"agent": "randomfact", "query": "Give me a surprising fact with the keyword: volcanoes."}
+{"agent": "randomfact", "query": "Random fact about the Roman Empire, please."}
+{"agent": "randomfact", "query": "Surprise me with a fact about deep sea creatures."}
+{"agent": "randomfact", "query": "Keyword: honey. Give me one fact."}
+{"agent": "randomfact", "query": "Tell me something unexpected about human sleep."}
+{"agent": "news", "query": "What's the news in Melbourne today?"}
+{"agent": "news", "query": "Give me today's headlines for Tokyo."}
+{"agent": "news", "query": "News briefing for Reykjavik please."}
+{"agent": "news", "query": "What is happening in Nairobi today?"}
+{"agent": "news", "query": "Today's news for Buenos Aires."}
+{"agent": "news", "query": "Headlines for Vancouver, Canada."}

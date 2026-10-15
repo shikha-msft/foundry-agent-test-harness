@@ -1,0 +1,166 @@
+# Builds and deploys the Streamlit app. Nothing else.
+#
+#   Build    Packages the app code into app.zip and publishes it as an artifact.
+#            (App Service installs requirements.txt itself during deployment.)
+#   Deploy   Zip-deploys that artifact to the existing web app named by
+#            WEB_APP_NAME, authenticating as the self-hosted Deploy agent's own
+#            managed identity (no ARM service connection). Skipped for pull
+#            requests.
+#
+# What this pipeline does NOT do:
+#   - Run tests: run them locally (README Step 5).
+#   - Create the Azure resources (App Service plan, web app, RBAC): they must
+#     already exist (README Step 12).
+#   - Create or version agents, or run evaluations: the app does that itself
+#     (agents on first load, evaluations from its Evaluations tab).
+#
+# Prerequisites in Azure DevOps (details in the README, Step 12):
+#   1. A self-hosted agent pool (Linux) - set below in `pool:` - whose
+#      VM/VMSS has a system- or user-assigned managed identity granted
+#      "Contributor" (or "Website Contributor") on the web app's resource
+#      group, and with the Azure CLI installed. No ARM service connection is
+#      used for deployment: this avoids pipeline tasks that don't support
+#      Workload Identity Federation service connections (symptom: "Could not
+#      fetch access token for Managed Service Principal" during
+#      AzureWebApp@1).
+#   2. A variable group named 'APP-6147-NP-MSFT' containing the
+#      environment-specific values listed in README Step 12d, plus
+#      WEB_APP_RESOURCE_GROUP (the web app's resource group name) and,
+#      only if the agent's managed identity is user-assigned,
+#      L3_AGENT_IDENTITY_CLIENT_ID (that identity's client ID).
+
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  - group: APP-6147-NP-MSFT
+  - name: workingDir
+    value: .
+
+# Default pool for jobs that don't set their own `pool:` - only the Deploy
+# job below uses this (Build overrides it with a Microsoft-hosted image).
+pool:
+  name: APP-5325-DLZ009-AIF_np
+
+stages:
+  - stage: Build
+    displayName: Build
+    jobs:
+      - job: build
+        displayName: Package app
+        # Microsoft-hosted: Build only zips files, needs no Azure access, and
+        # this image guarantees zip/unzip are present (the self-hosted pool
+        # above does not - its agent failed on this step with "zip: command
+        # not found").
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          # Only what the app needs at runtime.
+          - script: |
+              set -euo pipefail
+              cd "$(workingDir)"
+              zip -r -q "$(Build.ArtifactStagingDirectory)/app.zip" \
+                app agents data src requirements.txt \
+                -x '*/__pycache__/*' '*.pyc'
+              unzip -l "$(Build.ArtifactStagingDirectory)/app.zip" | tail -n 1
+            displayName: Package app
+
+          - publish: $(Build.ArtifactStagingDirectory)/app.zip
+            artifact: app
+            displayName: Publish app package
+
+  - stage: Deploy
+    displayName: Deploy
+    dependsOn: Build
+    # Pull requests only build.
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - job: deploy
+        displayName: Deploy Streamlit app
+        # Runs on the pipeline-level pool above; its host's managed identity
+        # is what authenticates the az CLI calls below, not a service
+        # connection.
+        steps:
+          - download: current
+            artifact: app
+            displayName: Download app package
+
+          - script: |
+              set -euo pipefail
+              case "$WEB_APP_NAME_IN" in
+                ''|\$\(*)
+                  echo "WEB_APP_NAME is not configured in the APP-6147-NP-MSFT variable group."
+                  exit 1 ;;
+              esac
+              case "$WEB_APP_RESOURCE_GROUP_IN" in
+                ''|\$\(*)
+                  echo "WEB_APP_RESOURCE_GROUP is not configured in the APP-6147-NP-MSFT variable group."
+                  exit 1 ;;
+              esac
+              case "$PROJECT_ENDPOINT_IN" in
+                ''|\$\(*)
+                  echo "AZURE_AI_PROJECT_ENDPOINT is not configured in the APP-6147-NP-MSFT variable group."
+                  exit 1 ;;
+              esac
+              case "$MODEL_DEPLOYMENT_IN" in
+                ''|\$\(*)
+                  echo "AZURE_AI_MODEL_DEPLOYMENT_NAME is not configured in the APP-6147-NP-MSFT variable group."
+                  exit 1 ;;
+              esac
+              case "$WORKSPACE_ID_IN" in
+                ''|\$\(*)
+                  echo "LOG_ANALYTICS_WORKSPACE_ID is not configured in the APP-6147-NP-MSFT variable group."
+                  exit 1 ;;
+              esac
+              case "$OTEL_SERVICE_NAME_IN" in
+                ''|\$\(*)
+                  echo "OTEL_SERVICE_NAME is not configured in the APP-6147-NP-MSFT variable group."
+                  exit 1 ;;
+              esac
+              command -v az >/dev/null || { echo "Azure CLI ('az') is not installed on this self-hosted agent."; exit 1; }
+              echo "deploying code to $WEB_APP_NAME_IN"
+            displayName: Check target web app
+            env:
+              WEB_APP_NAME_IN: $(WEB_APP_NAME)
+              WEB_APP_RESOURCE_GROUP_IN: $(WEB_APP_RESOURCE_GROUP)
+              PROJECT_ENDPOINT_IN: $(AZURE_AI_PROJECT_ENDPOINT)
+              MODEL_DEPLOYMENT_IN: $(AZURE_AI_MODEL_DEPLOYMENT_NAME)
+              WORKSPACE_ID_IN: $(LOG_ANALYTICS_WORKSPACE_ID)
+              OTEL_SERVICE_NAME_IN: $(OTEL_SERVICE_NAME)
+
+          - script: |
+              set -euo pipefail
+              # System-assigned identity by default; pass --client-id only if
+              # the agent's identity is user-assigned
+              # (L3_AGENT_IDENTITY_CLIENT_ID set).
+              if [ -n "${L3_AGENT_IDENTITY_CLIENT_ID:-}" ]; then
+                az login --identity --client-id "$L3_AGENT_IDENTITY_CLIENT_ID" >/dev/null
+              else
+                az login --identity >/dev/null
+              fi
+
+              az webapp deploy \
+                --resource-group "$(WEB_APP_RESOURCE_GROUP)" \
+                --name "$(WEB_APP_NAME)" \
+                --src-path "$(Pipeline.Workspace)/app/app.zip" \
+                --type zip
+
+              az webapp config set \
+                --resource-group "$(WEB_APP_RESOURCE_GROUP)" \
+                --name "$(WEB_APP_NAME)" \
+                --startup-file "python -m streamlit run app/streamlit_app.py --server.port 8000 --server.address 0.0.0.0 --server.headless true"
+
+              az webapp config appsettings set \
+                --resource-group "$(WEB_APP_RESOURCE_GROUP)" \
+                --name "$(WEB_APP_NAME)" \
+                --settings \
+                  AZURE_AI_PROJECT_ENDPOINT="$(AZURE_AI_PROJECT_ENDPOINT)" \
+                  AZURE_AI_MODEL_DEPLOYMENT_NAME="$(AZURE_AI_MODEL_DEPLOYMENT_NAME)" \
+                  LOG_ANALYTICS_WORKSPACE_ID="$(LOG_ANALYTICS_WORKSPACE_ID)" \
+                  OTEL_SERVICE_NAME="$(OTEL_SERVICE_NAME)" \
+                  ENABLE_ORYX_BUILD="true"
+            displayName: Deploy Streamlit app
+            env:
+              L3_AGENT_IDENTITY_CLIENT_ID: $(L3_AGENT_IDENTITY_CLIENT_ID)

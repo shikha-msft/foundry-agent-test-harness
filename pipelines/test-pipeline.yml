@@ -1,0 +1,132 @@
+# TEST/DEV VARIANT - uses an Azure DevOps ARM service connection (Workload
+# Identity Federation) to deploy, same as this repo used before the
+# self-hosted-agent-identity change. Kept so this approach can still be tried
+# in environments where the service connection's token exchange works.
+#
+# `azure-pipelines.yml` (no service connection, deploys via a self-hosted
+# agent's own managed identity) is the one used in the customer environment,
+# where this service-connection approach hit "Could not fetch access token
+# for Managed Service Principal" (a known WIF/task-version incompatibility).
+#
+# Builds and deploys the Streamlit app. Nothing else.
+#
+#   Build    Packages the app code into app.zip and publishes it as an artifact.
+#            (App Service installs requirements.txt itself during deployment.)
+#   Deploy   Zip-deploys that artifact to the existing web app named by
+#            WEB_APP_NAME. Skipped for pull requests.
+#
+# What this pipeline does NOT do:
+#   - Run tests: run them locally (README Step 5).
+#   - Create the Azure resources (App Service plan, web app, RBAC): they must
+#     already exist (README Step 12).
+#   - Create or version agents, or run evaluations: the app does that itself
+#     (agents on first load, evaluations from its Evaluations tab).
+#
+# Prerequisites in Azure DevOps (details in the README, Step 12):
+#   1. An ARM service connection named 'foundry-observability-sc' (workload
+#      identity federation) whose service principal has "Contributor" on the
+#      web app's resource group.
+#   2. A variable group named 'foundry-agent-observability' containing the
+#      environment-specific values listed in README Step 12e.
+
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  - group: foundry-agent-observability
+  - name: azureServiceConnection
+    value: Shikha-NonProd-ServiceConnection
+  - name: workingDir
+    value: .
+
+stages:
+  - stage: Build
+    displayName: Build
+    jobs:
+      - job: build
+        displayName: Package app
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          # Only what the app needs at runtime.
+          - script: |
+              set -euo pipefail
+              cd "$(workingDir)"
+              zip -r -q "$(Build.ArtifactStagingDirectory)/app.zip" \
+                app agents data src requirements.txt \
+                -x '*/__pycache__/*' '*.pyc'
+              unzip -l "$(Build.ArtifactStagingDirectory)/app.zip" | tail -n 1
+            displayName: Package app
+
+          - publish: $(Build.ArtifactStagingDirectory)/app.zip
+            artifact: app
+            displayName: Publish app package
+
+  - stage: Deploy
+    displayName: Deploy
+    dependsOn: Build
+    # Pull requests only build.
+    condition: and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - job: deploy
+        displayName: Deploy Streamlit app
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - download: current
+            artifact: app
+            displayName: Download app package
+
+          - script: |
+              set -euo pipefail
+              case "$WEB_APP_NAME_IN" in
+                ''|\$\(*)
+                  echo "WEB_APP_NAME is not configured in the foundry-agent-observability variable group."
+                  exit 1 ;;
+              esac
+              case "$PROJECT_ENDPOINT_IN" in
+                ''|\$\(*)
+                  echo "AZURE_AI_PROJECT_ENDPOINT is not configured in the foundry-agent-observability variable group."
+                  exit 1 ;;
+              esac
+              case "$MODEL_DEPLOYMENT_IN" in
+                ''|\$\(*)
+                  echo "AZURE_AI_MODEL_DEPLOYMENT_NAME is not configured in the foundry-agent-observability variable group."
+                  exit 1 ;;
+              esac
+              case "$WORKSPACE_ID_IN" in
+                ''|\$\(*)
+                  echo "LOG_ANALYTICS_WORKSPACE_ID is not configured in the foundry-agent-observability variable group."
+                  exit 1 ;;
+              esac
+              case "$OTEL_SERVICE_NAME_IN" in
+                ''|\$\(*)
+                  echo "OTEL_SERVICE_NAME is not configured in the foundry-agent-observability variable group."
+                  exit 1 ;;
+              esac
+              echo "deploying code to $WEB_APP_NAME_IN"
+            displayName: Check target web app
+            env:
+              WEB_APP_NAME_IN: $(WEB_APP_NAME)
+              PROJECT_ENDPOINT_IN: $(AZURE_AI_PROJECT_ENDPOINT)
+              MODEL_DEPLOYMENT_IN: $(AZURE_AI_MODEL_DEPLOYMENT_NAME)
+              WORKSPACE_ID_IN: $(LOG_ANALYTICS_WORKSPACE_ID)
+              OTEL_SERVICE_NAME_IN: $(OTEL_SERVICE_NAME)
+
+          - task: AzureWebApp@1
+            displayName: Deploy Streamlit app
+            inputs:
+              azureSubscription: $(azureServiceConnection)
+              appType: webAppLinux
+              appName: $(WEB_APP_NAME)
+              package: $(Pipeline.Workspace)/app/app.zip
+              deploymentMethod: zipDeploy
+              startupCommand: python -m streamlit run app/streamlit_app.py --server.port 8000 --server.address 0.0.0.0 --server.headless true
+              appSettings: >-
+                -AZURE_AI_PROJECT_ENDPOINT "$(AZURE_AI_PROJECT_ENDPOINT)"
+                -AZURE_AI_MODEL_DEPLOYMENT_NAME "$(AZURE_AI_MODEL_DEPLOYMENT_NAME)"
+                -LOG_ANALYTICS_WORKSPACE_ID "$(LOG_ANALYTICS_WORKSPACE_ID)"
+                -OTEL_SERVICE_NAME "$(OTEL_SERVICE_NAME)"
+                -ENABLE_ORYX_BUILD "true"

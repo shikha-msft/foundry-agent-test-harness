@@ -1,0 +1,12 @@
+schemaVersion: 1.0.0
+providers:
+- provider: InventoryAsCode
+  version: 1.0.0
+  metadata:
+    isProduction: false
+    accountableOwners:
+      service: 0d393729-2b03-4de0-8831-a121245cf4a1
+    routing:
+      defaultAreaPath:
+        org: shikha-sinha
+        path: Shikha-Project

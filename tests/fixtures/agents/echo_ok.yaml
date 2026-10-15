@@ -1,0 +1,22 @@
+# Echo agent that satisfies its output guardrails.
+key: echo_ok
+name: echo-ok
+label: Echo OK
+backend: echo
+backend_options:
+  reply: "BRIEFING: {prompt}"
+instructions: Echo the prompt.
+limits:
+  session_token_budget: 10
+  batch_token_budget: 12
+guardrails:
+  input:
+    action: block
+    max_chars: 200
+    blocked_patterns:
+      - '(?i)ignore (all )?previous instructions'
+  output:
+    action: flag
+    required_prefix: "BRIEFING:"
+  hooks:
+    - agent_harness.example_hooks:no_email_addresses

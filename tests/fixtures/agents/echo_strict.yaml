@@ -1,0 +1,10 @@
+# Echo agent whose reply never has the required prefix, with output blocking.
+key: echo_strict
+name: echo-strict
+label: Echo Strict
+backend: echo
+instructions: Echo the prompt.
+guardrails:
+  output:
+    action: block
+    required_prefix: "BRIEFING:"

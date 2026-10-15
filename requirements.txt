@@ -1,0 +1,21 @@
+# Foundry SDK
+azure-ai-projects>=2.0.0
+azure-identity
+python-dotenv
+
+# Harness: declarative agent specs
+pyyaml
+
+# agent_framework backend: runs a Microsoft Agent Framework agent in-process
+agent-framework
+
+# Observability -> Application Insights -> Log Analytics
+opentelemetry-sdk
+azure-core-tracing-opentelemetry
+azure-monitor-opentelemetry
+azure-monitor-query
+
+# UI
+streamlit
+# streamlit requires pandas<3; pinning avoids a slow pip backtrack.
+pandas>=2.2.3,<3
